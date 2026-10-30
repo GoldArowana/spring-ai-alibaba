@@ -19,6 +19,12 @@ try {
   $control = [AnonymousReader]::Open($Directory, 'positive.txt')
   try { $positiveBefore = $control.ContextVerified -and $control.Opened -and $control.ReadText() -eq $payload }
   finally { $control.Dispose() }
+  Write-Properties (Join-Path $Output 'preflight.properties') ([ordered]@{
+    caller_sid_match=$callerMatch; account_sid_match=$accountMatch;
+    positive_opened=$control.Opened; positive_win32_error=$control.Win32Error;
+    positive_thread_token_error=$control.TokenQueryError;
+    positive_context_verified=$control.ContextVerified; positive_before_ok=$positiveBefore
+  })
   if (-not $positiveBefore -or -not $callerMatch -or -not $accountMatch) { throw 'Observer identity/positive control failed' }
   $early = [AnonymousReader]::Open($Directory, $Leaf)
   Write-Properties "$SignalPrefix.ready.properties" ([ordered]@{
