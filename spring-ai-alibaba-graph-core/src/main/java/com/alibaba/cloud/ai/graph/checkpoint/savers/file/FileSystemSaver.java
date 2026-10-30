@@ -32,10 +32,12 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Collection;
@@ -69,9 +71,10 @@ import static java.lang.String.format;
  * old-image backup until the write and close finish. This requires additional disk space.
  * A failed copy attempts restoration through the same file handle, preserving existing
  * file identity and access controls. If restoration or close fails, the old backup is
- * retained and the exception identifies it for recovery. First saves and non-POSIX stores
- * retain their existing copy behavior. This is not a crash-atomic or cross-process
- * transaction.
+ * retained and the exception identifies it for recovery. A failed first write on POSIX
+ * removes its new file only after a known close and a matching file identity check.
+ * Dangling symbolic links and non-POSIX stores retain their existing copy behavior. This
+ * is not a crash-atomic or cross-process transaction.
  * </p>
  */
 public class FileSystemSaver implements BaseCheckpointSaver {
@@ -185,11 +188,15 @@ public class FileSystemSaver implements BaseCheckpointSaver {
 	}
 
 	/*
-	 * Recovery is currently limited to existing files on the default POSIX filesystem.
-	 * Other stores and first saves retain their existing copy behavior. In particular,
-	 * this does not change creation through a dangling symbolic link.
+	 * Recovery and failed-first-write cleanup are limited to the default POSIX
+	 * filesystem. Other stores retain their existing copy behavior. In particular, this
+	 * does not change creation through a dangling symbolic link.
 	 */
 	void replaceFromStaged(Path staged, Path target) throws IOException {
+		if (Files.notExists(target, LinkOption.NOFOLLOW_LINKS) && supportsPosix(target.getParent())) {
+			createFromStaged(staged, target);
+			return;
+		}
 		if (!supportsPrivateRecovery(target)) {
 			try (InputStream input = Files.newInputStream(staged);
 					OutputStream output = Files.newOutputStream(target)) {
@@ -285,6 +292,78 @@ public class FileSystemSaver implements BaseCheckpointSaver {
 		if (failure instanceof Error error) {
 			throw error;
 		}
+	}
+
+	void createFromStaged(Path staged, Path target) throws IOException {
+		// A failed CREATE_NEW never owns an existing entry and must not clean it up.
+		FileChannel channel = FileChannel.open(target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+		Object identity = null;
+		Throwable failure = null;
+		boolean closed = false;
+		try {
+			identity = checkpointFileKey(target);
+			copyToCheckpoint(staged, channel);
+		}
+		catch (IOException | RuntimeException | Error problem) {
+			failure = problem;
+		}
+		try {
+			closeCheckpoint(channel);
+			closed = true;
+		}
+		catch (IOException | RuntimeException | Error close) {
+			if (failure == null) {
+				failure = close;
+			}
+			else if (failure != close) {
+				failure.addSuppressed(close);
+			}
+		}
+		if (failure != null) {
+			if (closed) {
+				removeIncompleteCheckpoint(target, identity, failure);
+			}
+			else {
+				failure.addSuppressed(
+						new IOException("First checkpoint close is uncertain; file may remain at " + target));
+			}
+		}
+		if (failure instanceof IOException io) {
+			throw io;
+		}
+		if (failure instanceof RuntimeException runtime) {
+			throw runtime;
+		}
+		if (failure instanceof Error error) {
+			throw error;
+		}
+	}
+
+	private void removeIncompleteCheckpoint(Path target, Object identity, Throwable failure) {
+		try {
+			if (Files.notExists(target, LinkOption.NOFOLLOW_LINKS)) {
+				return;
+			}
+			// These path checks are not an atomic binding to the open handle or a
+			// cross-process compare-and-delete. External writers remain unsupported.
+			if (identity == null || !identity.equals(checkpointFileKey(target))) {
+				failure.addSuppressed(new IOException(
+						"Failed first checkpoint identity is unverified; path left untouched at " + target));
+				return;
+			}
+			Files.delete(target);
+		}
+		catch (IOException | RuntimeException | Error cleanup) {
+			failure.addSuppressed(
+					new IOException("Failed first checkpoint cleanup is uncertain; file may remain at " + target,
+							cleanup == failure ? null : cleanup));
+		}
+	}
+
+	Object checkpointFileKey(Path target) throws IOException {
+		BasicFileAttributes attributes = Files.readAttributes(target, BasicFileAttributes.class,
+				LinkOption.NOFOLLOW_LINKS);
+		return attributes.isRegularFile() ? attributes.fileKey() : null;
 	}
 
 	private static Path createTemporary(Path directory, String prefix, String suffix) throws IOException {
