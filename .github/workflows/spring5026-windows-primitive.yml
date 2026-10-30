@@ -1,0 +1,41 @@
+# Copyright 2026 the original author or authors.
+# Licensed under the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+name: Spring 5026 Windows scratch primitive
+on:
+  push:
+    branches: [diag/spring5026-windows-primitive-20261030]
+    paths:
+      - .github/workflows/spring5026-windows-primitive.yml
+      - diagnostics/spring5026-windows/**
+permissions:
+  contents: read
+concurrency:
+  group: spring5026-windows-primitive
+  cancel-in-progress: false
+jobs:
+  probe:
+    if: github.repository == 'GoldArowana/spring-ai-alibaba'
+    runs-on: windows-2022
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        java: ['17', '21']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # verified v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: diagnostics/spring5026-windows
+      - name: Compile and measure synthetic scratch files
+        shell: pwsh
+        run: ./diagnostics/spring5026-windows/run.ps1 -JavaVersion '${{ matrix.java }}'
+      - name: Keep bounded diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # verified v4
+        with:
+          name: spring5026-windows-java${{ matrix.java }}
+          path: diag-output/java${{ matrix.java }}/
+          retention-days: 1
+          if-no-files-found: warn
