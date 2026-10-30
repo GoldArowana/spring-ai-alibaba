@@ -10,7 +10,7 @@ $classes = Join-Path $output 'classes'
 New-Item -ItemType Directory -Force $classes | Out-Null
 & (Join-Path $homePath 'bin/javac.exe') --release 17 --add-modules jdk.security.auth,jdk.unsupported -d $classes (Join-Path $PSScriptRoot 'WindowsScratchProbe.java')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& (Join-Path $homePath 'bin/java.exe') -Xmx128m -Duser.name=not-the-token-user --add-modules jdk.security.auth,jdk.unsupported -cp $classes WindowsScratchProbe $output $PSScriptRoot
+& (Join-Path $homePath 'bin/java.exe') -Xmx128m '-Duser.name=not-the-token-user' --add-modules jdk.security.auth,jdk.unsupported -cp $classes WindowsScratchProbe $output $PSScriptRoot
 $result = $LASTEXITCODE
 if (Test-Path (Join-Path $output 'report.json')) { Get-Content (Join-Path $output 'report.json') }
 Remove-Item -Recurse -Force $classes
